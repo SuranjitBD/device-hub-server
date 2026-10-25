@@ -1,76 +1,179 @@
+const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const cors = require('cors');
 
-const server = http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Device Hub Pro Server (File + Location + Control) is Active!');
-});
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '100mb' }));
 
-// ৫০ এমবি পর্যন্ত ফাইল ট্রান্সফার সাপোর্ট
+const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' },
-  maxHttpBufferSize: 50 * 1024 * 1024
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  maxHttpBufferSize: 1e8, // 100 MB পর্যন্ত বড় ফাইল ও ছবি ট্রান্সফারের সাপোর্ট
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
-const devices = new Map();
+let devices = {};
+let globalEmergencyPin = "1234"; // ডিফল্ট পিন, যা এডমিন প্যানেল থেকে পরিবর্তন করা যাবে
+
+app.get('/', (req, res) => {
+  res.send('Device Hub Pro Server is Live & Running 24/7!');
+});
 
 io.on('connection', (socket) => {
-  console.log('নতুন ডিভাইস সংযুক্ত হয়েছে:', socket.id);
+  console.log('নতুন ডিভাইস যুক্ত হয়েছে:', socket.id);
 
-  // ডিভাইসের ব্যাটারি, লোকেশন ও স্ট্যাটাস আপডেট
-  socket.on('update_device', (data) => {
-    devices.set(socket.id, {
-      socketId: socket.id,
-      id: data.id,
-      name: data.name,
-      battery: data.battery,
-      isCharging: data.isCharging,
-      isRinging: data.isRinging,
-      isLocked: data.isLocked,
-      location: data.location || 'Unknown',
-      coordinates: data.coordinates || '0.0, 0.0',
-      ip: data.ip || '',
-      isp: data.isp || ''
-    });
-    io.emit('device_list', Array.from(devices.values()));
+  // ১. ডিভাইস রেজিস্ট্রেশন
+  socket.on('register_device', (data) => {
+    devices[socket.id] = {
+      id: socket.id,
+      name: data.name || 'Unknown Device',
+      isAdmin: data.isAdmin || false,
+      lat: data.lat || null,
+      lng: data.lng || null,
+      address: data.address || 'লোকেশন খোঁজা হচ্ছে...',
+      isLocked: data.isLocked || false,
+      currentPath: data.currentPath || '/storage/emulated/0',
+      files: data.files || [],
+      lastSeen: new Date().toLocaleTimeString()
+    };
+    io.emit('device_list', Object.values(devices));
   });
 
-  // কমান্ড পাঠানো (রিং, মেসেজ, লক, ফাইল লিস্ট, ফাইল সেভ/ডাউনলোড)
-  socket.on('send_command', (cmd) => {
-    const { targetId, sender, senderId, action, payload } = cmd;
-    console.log(`কমান্ড: ${action} | প্রেরক: ${sender} -> টার্গেট: ${targetId}`);
+  // ২. লোকেশন আপডেট
+  socket.on('update_location', (data) => {
+    if (devices[socket.id]) {
+      devices[socket.id].lat = data.lat;
+      devices[socket.id].lng = data.lng;
+      devices[socket.id].address = data.address || `${data.lat}, ${data.lng}`;
+      io.emit('device_list', Object.values(devices));
+    }
+  });
 
+  // ৩. রিং বাজানো ও বন্ধ করা
+  socket.on('ring_device', (targetId) => {
     if (targetId === 'ALL') {
-      io.emit('execute_command', { action, sender, senderId, payload });
+      socket.broadcast.emit('command_ring');
     } else {
-      for (const [sockId, dev] of devices.entries()) {
-        if (dev.id === targetId) {
-          io.to(sockId).emit('execute_command', { action, sender, senderId, payload });
-        }
-      }
+      io.to(targetId).emit('command_ring');
     }
   });
 
-  // ফাইল লিস্ট এবং ডাউনলোড করা ফাইল মেইন ফোনে পৌঁছে দেওয়া
-  socket.on('file_response', (res) => {
-    const { targetId } = res;
-    for (const [sockId, dev] of devices.entries()) {
-      if (dev.id === targetId) {
-        io.to(sockId).emit('receive_file_response', res);
-      }
+  socket.on('stop_ring', (targetId) => {
+    if (targetId === 'ALL') {
+      socket.broadcast.emit('command_stop_ring');
+    } else {
+      io.to(targetId).emit('command_stop_ring');
     }
+  });
+
+  // ৪. মেসেজ পাঠানো
+  socket.on('send_message', (data) => {
+    if (data.targetId === 'ALL') {
+      socket.broadcast.emit('command_message', { message: data.message });
+    } else {
+      io.to(data.targetId).emit('command_message', { message: data.message });
+    }
+  });
+
+  // ৫. কাস্টম পিনসহ ডিভাইস লক ও আনলক
+  socket.on('lock_device', (data) => {
+    const pinToUse = data.pin || globalEmergencyPin;
+    globalEmergencyPin = pinToUse;
+
+    if (data.targetId === 'ALL') {
+      Object.keys(devices).forEach(id => {
+        if (id !== socket.id && !devices[id].isAdmin) {
+          devices[id].isLocked = true;
+        }
+      });
+      socket.broadcast.emit('command_lock', { pin: pinToUse });
+    } else {
+      if (devices[data.targetId]) devices[data.targetId].isLocked = true;
+      io.to(data.targetId).emit('command_lock', { pin: pinToUse });
+    }
+    io.emit('device_list', Object.values(devices));
+  });
+
+  socket.on('unlock_device', (targetId) => {
+    if (targetId === 'ALL') {
+      Object.keys(devices).forEach(id => {
+        if (devices[id]) devices[id].isLocked = false;
+      });
+      socket.broadcast.emit('command_unlock');
+    } else {
+      if (devices[targetId]) devices[targetId].isLocked = false;
+      io.to(targetId).emit('command_unlock');
+    }
+    io.emit('device_list', Object.values(devices));
+  });
+
+  socket.on('device_unlocked_by_pin', () => {
+    if (devices[socket.id]) {
+      devices[socket.id].isLocked = false;
+      io.emit('device_list', Object.values(devices));
+    }
+  });
+
+  // ৬. ফাইল ম্যানেজার: ফাইল লিস্ট, প্রিভিউ, ডিলিট ও প্রোগ্রেসসহ ডাউনলোড
+  socket.on('request_files', (data) => {
+    io.to(data.targetId).emit('command_get_files', {
+      path: data.path,
+      adminId: socket.id
+    });
+  });
+
+  socket.on('files_response', (data) => {
+    if (devices[socket.id]) {
+      devices[socket.id].currentPath = data.path;
+      devices[socket.id].files = data.files;
+    }
+    if (data.adminId) {
+      io.to(data.adminId).emit('receive_files', {
+        deviceId: socket.id,
+        path: data.path,
+        files: data.files
+      });
+    } else {
+      io.emit('device_list', Object.values(devices));
+    }
+  });
+
+  // ফাইল ডিলিট কমান্ড
+  socket.on('delete_file', (data) => {
+    io.to(data.targetId).emit('command_delete_file', {
+      path: data.path,
+      parentPath: data.parentPath,
+      adminId: socket.id
+    });
+  });
+
+  // ফাইল ডাউনলোড রিকোয়েস্ট (চাইল্ড ফোন থেকে এডমিন ফোনে)
+  socket.on('download_file', (data) => {
+    io.to(data.targetId).emit('command_send_file', {
+      path: data.path,
+      fileName: data.fileName,
+      isPreviewOnly: data.isPreviewOnly || false,
+      adminId: socket.id
+    });
+  });
+
+  // ফাইল চাঙ্ক (Chunk) রিলে - ডাউনলোড প্রোগ্রেস বারের জন্য
+  socket.on('file_chunk_from_client', (data) => {
+    io.to(data.adminId).emit('file_chunk_to_admin', data);
   });
 
   socket.on('disconnect', () => {
-    devices.delete(socket.id);
-    io.emit('device_list', Array.from(devices.values()));
-    console.log('ডিভাইস বিচ্ছিন্ন হয়েছে:', socket.id);
+    delete devices[socket.id];
+    io.emit('device_list', Object.values(devices));
   });
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`===============================================`);
+  console.log('====================================================');
   console.log(`Device Hub Pro Server চালু হয়েছে পোর্ট: ${PORT}`);
-  console.log(`===============================================`);
+  console.log('====================================================');
 });
