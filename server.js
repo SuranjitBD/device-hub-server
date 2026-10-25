@@ -1,13 +1,12 @@
-const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
 
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '100mb' }));
+// Express ছাড়াই সরাসরি Node.js-এর নিজস্ব HTTP সার্ভার (কোনো অতিরিক্ত প্যাকেজ লাগবে না)
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Device Hub Pro Server is Live & Running 24/7!');
+});
 
-const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
   maxHttpBufferSize: 1e8, // 100 MB পর্যন্ত বড় ফাইল ও ছবি ট্রান্সফারের সাপোর্ট
@@ -17,10 +16,6 @@ const io = new Server(server, {
 
 let devices = {};
 let globalEmergencyPin = "1234";
-
-app.get('/', (req, res) => {
-  res.send('Device Hub Pro Server is Live & Running 24/7!');
-});
 
 io.on('connection', (socket) => {
   console.log('নতুন ডিভাইস যুক্ত হয়েছে:', socket.id);
