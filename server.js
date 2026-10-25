@@ -16,7 +16,7 @@ const io = new Server(server, {
 });
 
 let devices = {};
-let globalEmergencyPin = "1234"; // ডিফল্ট পিন, যা এডমিন প্যানেল থেকে পরিবর্তন করা যাবে
+let globalEmergencyPin = "1234";
 
 app.get('/', (req, res) => {
   res.send('Device Hub Pro Server is Live & Running 24/7!');
@@ -117,7 +117,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ৬. ফাইল ম্যানেজার: ফাইল লিস্ট, প্রিভিউ, ডিলিট ও প্রোগ্রেসসহ ডাউনলোড
+  // ৬. ফাইল ম্যানেজার ও ডাউনলোড প্রোগ্রেস
   socket.on('request_files', (data) => {
     io.to(data.targetId).emit('command_get_files', {
       path: data.path,
@@ -141,7 +141,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ফাইল ডিলিট কমান্ড
   socket.on('delete_file', (data) => {
     io.to(data.targetId).emit('command_delete_file', {
       path: data.path,
@@ -150,7 +149,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ফাইল ডাউনলোড রিকোয়েস্ট (চাইল্ড ফোন থেকে এডমিন ফোনে)
   socket.on('download_file', (data) => {
     io.to(data.targetId).emit('command_send_file', {
       path: data.path,
@@ -160,7 +158,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ফাইল চাঙ্ক (Chunk) রিলে - ডাউনলোড প্রোগ্রেস বারের জন্য
   socket.on('file_chunk_from_client', (data) => {
     io.to(data.adminId).emit('file_chunk_to_admin', data);
   });
@@ -168,6 +165,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     delete devices[socket.id];
     io.emit('device_list', Object.values(devices));
+    console.log('ডিভাইস বিচ্ছিন্ন হয়েছে:', socket.id);
   });
 });
 
